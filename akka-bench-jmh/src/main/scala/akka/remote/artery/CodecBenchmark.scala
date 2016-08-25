@@ -57,7 +57,6 @@ class CodecBenchmark {
   private val inboundEnvelopePool = ReusableInboundEnvelope.createObjectPool(capacity = 16)
   private val outboundEnvelopePool = ReusableOutboundEnvelope.createObjectPool(capacity = 16)
 
-  val compressionOut = NoOutboundCompressions
   val headerIn = HeaderBuilder.in(NoInboundCompressions)
   val envelopeTemplateBuffer = ByteBuffer.allocate(ArteryTransport.MaximumFrameSize).order(ByteOrder.LITTLE_ENDIAN)
 
@@ -136,8 +135,8 @@ class CodecBenchmark {
     val latch = new CountDownLatch(1)
     val N = 100000
 
-    val encoder: Flow[OutboundEnvelope, EnvelopeBuffer, NotUsed] =
-      Flow.fromGraph(new Encoder(uniqueLocalAddress, system, compressionOut, outboundEnvelopePool, envelopePool))
+    val encoder: Flow[OutboundEnvelope, EnvelopeBuffer, Encoder.ChangeOutboundCompression] =
+      Flow.fromGraph(new Encoder(uniqueLocalAddress, system, outboundEnvelopePool, envelopePool))
 
     Source.fromGraph(new BenchTestSourceSameElement(N, "elem"))
       .map(msg ⇒ outboundEnvelopePool.acquire().init(OptionVal.None, payload, OptionVal.Some(remoteRefB)))
@@ -193,8 +192,8 @@ class CodecBenchmark {
     val latch = new CountDownLatch(1)
     val N = 100000
 
-    val encoder: Flow[OutboundEnvelope, EnvelopeBuffer, NotUsed] =
-      Flow.fromGraph(new Encoder(uniqueLocalAddress, system, compressionOut, outboundEnvelopePool, envelopePool))
+    val encoder: Flow[OutboundEnvelope, EnvelopeBuffer, Encoder.ChangeOutboundCompression] =
+      Flow.fromGraph(new Encoder(uniqueLocalAddress, system, outboundEnvelopePool, envelopePool))
 
     val localRecipient = resolvedRef.path.toSerializationFormatWithAddress(uniqueLocalAddress.address)
     val provider = RARP(system).provider
