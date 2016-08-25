@@ -19,6 +19,7 @@ import akka.stream.stage.OutHandler
 import akka.stream.stage.TimerGraphStageLogic
 import akka.util.OptionVal
 import akka.Done
+import scala.concurrent.Future
 
 /**
  * INTERNAL API
@@ -178,9 +179,8 @@ private[akka] class InboundHandshake(inboundContext: InboundContext, inControlSt
             env.message match {
               case HandshakeReq(from) ⇒ onHandshakeReq(from)
               case HandshakeRsp(from) ⇒
-                implicit val ec = materializer.executionContext
-                inboundContext.completeHandshake(from).onComplete { _ ⇒
-                  getAsyncCallback[Done](_ ⇒ pull(in)).invoke(Done)
+                after(inboundContext.completeHandshake(from)) {
+                  pull(in)
                 }
               case _ ⇒
                 onMessage(env)
@@ -200,13 +200,23 @@ private[akka] class InboundHandshake(inboundContext: InboundContext, inControlSt
         })
 
       private def onHandshakeReq(from: UniqueAddress): Unit = {
-        implicit val ec = materializer.executionContext
-        inboundContext.completeHandshake(from).onComplete { _ ⇒
-          getAsyncCallback[Done] { _ ⇒
-            inboundContext.sendControl(from.address, HandshakeRsp(inboundContext.localAddress))
-            pull(in)
-          }.invoke(Done)
+        after(inboundContext.completeHandshake(from)) {
+          inboundContext.sendControl(from.address, HandshakeRsp(inboundContext.localAddress))
+          pull(in)
         }
+      }
+
+      private def after(first: Future[Done])(thenInside: ⇒ Unit): Unit = {
+        first.value match {
+          case Some(_) ⇒
+            thenInside
+          case None ⇒
+            implicit val ec = materializer.executionContext
+            first.onComplete { _ ⇒
+              getAsyncCallback[Done](_ ⇒ thenInside).invoke(Done)
+            }
+        }
+
       }
 
       private def onMessage(env: InboundEnvelope): Unit = {

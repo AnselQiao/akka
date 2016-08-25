@@ -29,6 +29,7 @@ private[remote] object Encoder {
   private[remote] trait ChangeOutboundCompression {
     def changeActorRefCompression(table: CompressionTable[ActorRef]): Future[Done]
     def changeClassManifestCompression(table: CompressionTable[String]): Future[Done]
+    def clearCompression(): Future[Done]
   }
 
   private[remote] class ChangeOutboundCompressionFailed extends RuntimeException(
@@ -63,13 +64,19 @@ private[remote] class Encoder(
       private val changeActorRefCompressionCb = getAsyncCallback[(CompressionTable[ActorRef], Promise[Done])] {
         case (table, done) ⇒
           headerBuilder.setOutboundActorRefCompression(table)
-          done.trySuccess(Done)
+          done.success(Done)
       }
 
       private val changeClassManifsetCompressionCb = getAsyncCallback[(CompressionTable[String], Promise[Done])] {
         case (table, done) ⇒
           headerBuilder.setOutboundClassManifestCompression(table)
-          done.trySuccess(Done)
+          done.success(Done)
+      }
+
+      private val clearCompressionCb = getAsyncCallback[Promise[Done]] { done ⇒
+        headerBuilder.setOutboundActorRefCompression(CompressionTable.empty[ActorRef])
+        headerBuilder.setOutboundClassManifestCompression(CompressionTable.empty[String])
+        done.success(Done)
       }
 
       override protected def logSource = classOf[Encoder]
@@ -146,6 +153,18 @@ private[remote] class Encoder(
       override def changeClassManifestCompression(table: CompressionTable[String]): Future[Done] = {
         val done = Promise[Done]()
         try changeClassManifsetCompressionCb.invoke((table, done)) catch {
+          // in case materialization not completed yet
+          case NonFatal(_) ⇒ done.tryFailure(new ChangeOutboundCompressionFailed)
+        }
+        done.future
+      }
+
+      /**
+       * External call from ChangeOutboundCompression materialized value
+       */
+      override def clearCompression(): Future[Done] = {
+        val done = Promise[Done]()
+        try clearCompressionCb.invoke(done) catch {
           // in case materialization not completed yet
           case NonFatal(_) ⇒ done.tryFailure(new ChangeOutboundCompressionFailed)
         }

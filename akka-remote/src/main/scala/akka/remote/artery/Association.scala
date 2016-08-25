@@ -103,6 +103,12 @@ private[remote] class Association(
       case None    ⇒ Future.failed(new ChangeOutboundCompressionFailed)
     }
 
+  def clearCompression(): Future[Done] =
+    changeOutboundCompression match {
+      case Some(c) ⇒ c.clearCompression()
+      case None    ⇒ Future.failed(new ChangeOutboundCompressionFailed)
+    }
+
   private val _testStages: CopyOnWriteArrayList[TestManagementApi] = new CopyOnWriteArrayList
 
   def testStages(): List[TestManagementApi] = {
@@ -152,32 +158,37 @@ private[remote] class Association(
       remoteAddress == peer.address,
       s"wrong remote address in completeHandshake, got ${peer.address}, expected $remoteAddress")
     val current = associationState
-    // clear outbound compression, it's safe to do that several times if someone else
-    // completes handshake at same time
-    import transport.system.dispatcher
-    for {
-      _ ← changeActorRefCompression(CompressionTable.empty[ActorRef])
-      _ ← changeClassManifestCompression(CompressionTable.empty[String])
-    } yield {
-      current.uniqueRemoteAddressPromise.trySuccess(peer)
-      current.uniqueRemoteAddressValue() match {
-        case Some(`peer`) ⇒
-        // our value
-        case _ ⇒
-          val newState = current.newIncarnation(Promise.successful(peer))
-          if (swapState(current, newState)) {
-            current.uniqueRemoteAddressValue() match {
-              case Some(old) ⇒
-                log.debug(
-                  "Incarnation {} of association to [{}] with new UID [{}] (old UID [{}])",
-                  newState.incarnation, peer.address, peer.uid, old.uid)
-              case None ⇒
-              // Failed, nothing to do
-            }
-            // if swap failed someone else completed before us, and that is fine
+
+    current.uniqueRemoteAddressValue() match {
+      case Some(`peer`) ⇒
+        // handshake already completed
+        Future.successful(Done)
+      case _ ⇒
+        // clear outbound compression, it's safe to do that several times if someone else
+        // completes handshake at same time, but it's important to clear it before
+        // we signal that the handshake is completed (uniqueRemoteAddressPromise.trySuccess)
+        import transport.system.dispatcher
+        clearCompression().map { _ ⇒
+          current.uniqueRemoteAddressPromise.trySuccess(peer)
+          current.uniqueRemoteAddressValue() match {
+            case Some(`peer`) ⇒
+            // our value
+            case _ ⇒
+              val newState = current.newIncarnation(Promise.successful(peer))
+              if (swapState(current, newState)) {
+                current.uniqueRemoteAddressValue() match {
+                  case Some(old) ⇒
+                    log.debug(
+                      "Incarnation {} of association to [{}] with new UID [{}] (old UID [{}])",
+                      newState.incarnation, peer.address, peer.uid, old.uid)
+                  case None ⇒
+                  // Failed, nothing to do
+                }
+                // if swap failed someone else completed before us, and that is fine
+              }
           }
-      }
-      Done
+          Done
+        }
     }
   }
 
@@ -261,8 +272,7 @@ private[remote] class Association(
                   "Association to [{}] with UID [{}] is irrecoverably failed. Quarantining address. {}",
                   remoteAddress, u, reason)
                 // clear outbound compression
-                changeActorRefCompression(CompressionTable.empty[ActorRef])
-                changeClassManifestCompression(CompressionTable.empty[String])
+                clearCompression()
                 // FIXME when we complete the switch to Long UID we must use Long here also, issue #20644
                 transport.eventPublisher.notifyListeners(QuarantinedEvent(remoteAddress, u.toInt))
                 // end delivery of system messages to that incarnation after this point
@@ -461,17 +471,23 @@ private[remote] class AssociationRegistry(createAssociation: Address ⇒ Associa
   @tailrec final def setUID(peer: UniqueAddress): Association = {
     val currentMap = associationsByUid.get
     val a = association(peer.address)
-    // make sure we don't overwrite same UID with different association
+
     currentMap.get(peer.uid) match {
-      case OptionVal.Some(previous) if (previous ne a) ⇒
-        throw new IllegalArgumentException(s"UID collision old [$previous] new [$a]")
-      case _ ⇒ // ok
+      case OptionVal.Some(previous) ⇒
+        if (previous eq a)
+          // associationsByUid Map already contains the right association
+          a
+        else
+          // make sure we don't overwrite same UID with different association
+          throw new IllegalArgumentException(s"UID collision old [$previous] new [$a]")
+      case _ ⇒
+        // update associationsByUid Map with the uid -> assocation
+        val newMap = currentMap.updated(peer.uid, a)
+        if (associationsByUid.compareAndSet(currentMap, newMap))
+          a
+        else
+          setUID(peer) // lost CAS, retry
     }
-    val newMap = currentMap.updated(peer.uid, a)
-    if (associationsByUid.compareAndSet(currentMap, newMap))
-      a
-    else
-      setUID(peer) // lost CAS, retry
   }
 
   def allAssociations: Set[Association] =
