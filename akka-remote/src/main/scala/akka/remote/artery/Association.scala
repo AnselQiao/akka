@@ -147,31 +147,37 @@ private[remote] class Association(
   def associationState: AssociationState =
     Unsafe.instance.getObjectVolatile(this, AbstractAssociation.sharedStateOffset).asInstanceOf[AssociationState]
 
-  def completeHandshake(peer: UniqueAddress): Unit = {
+  def completeHandshake(peer: UniqueAddress): Future[Done] = {
     require(
       remoteAddress == peer.address,
       s"wrong remote address in completeHandshake, got ${peer.address}, expected $remoteAddress")
     val current = associationState
-    current.uniqueRemoteAddressPromise.trySuccess(peer)
-    current.uniqueRemoteAddressValue() match {
-      case Some(`peer`) ⇒
-      // our value
-      case _ ⇒
-        val newState = current.newIncarnation(Promise.successful(peer))
-        if (swapState(current, newState)) {
-          current.uniqueRemoteAddressValue() match {
-            case Some(old) ⇒
-              // clear outbound compression
-              changeActorRefCompression(CompressionTable.empty[ActorRef])
-              changeClassManifestCompression(CompressionTable.empty[String])
-              log.debug(
-                "Incarnation {} of association to [{}] with new UID [{}] (old UID [{}])",
-                newState.incarnation, peer.address, peer.uid, old.uid)
-            case None ⇒
-            // Failed, nothing to do
+    // clear outbound compression, it's safe to do that several times if someone else
+    // completes handshake at same time
+    import transport.system.dispatcher
+    for {
+      _ ← changeActorRefCompression(CompressionTable.empty[ActorRef])
+      _ ← changeClassManifestCompression(CompressionTable.empty[String])
+    } yield {
+      current.uniqueRemoteAddressPromise.trySuccess(peer)
+      current.uniqueRemoteAddressValue() match {
+        case Some(`peer`) ⇒
+        // our value
+        case _ ⇒
+          val newState = current.newIncarnation(Promise.successful(peer))
+          if (swapState(current, newState)) {
+            current.uniqueRemoteAddressValue() match {
+              case Some(old) ⇒
+                log.debug(
+                  "Incarnation {} of association to [{}] with new UID [{}] (old UID [{}])",
+                  newState.incarnation, peer.address, peer.uid, old.uid)
+              case None ⇒
+              // Failed, nothing to do
+            }
+            // if swap failed someone else completed before us, and that is fine
           }
-          // if swap failed someone else completed before us, and that is fine
-        }
+      }
+      Done
     }
   }
 

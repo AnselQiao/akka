@@ -18,6 +18,7 @@ import akka.stream.stage.InHandler
 import akka.stream.stage.OutHandler
 import akka.stream.stage.TimerGraphStageLogic
 import akka.util.OptionVal
+import akka.Done
 
 /**
  * INTERNAL API
@@ -177,8 +178,10 @@ private[akka] class InboundHandshake(inboundContext: InboundContext, inControlSt
             env.message match {
               case HandshakeReq(from) ⇒ onHandshakeReq(from)
               case HandshakeRsp(from) ⇒
-                inboundContext.completeHandshake(from)
-                pull(in)
+                implicit val ec = materializer.executionContext
+                inboundContext.completeHandshake(from).onComplete { _ ⇒
+                  getAsyncCallback[Done](_ ⇒ pull(in)).invoke(Done)
+                }
               case _ ⇒
                 onMessage(env)
             }
@@ -197,21 +200,19 @@ private[akka] class InboundHandshake(inboundContext: InboundContext, inControlSt
         })
 
       private def onHandshakeReq(from: UniqueAddress): Unit = {
-        inboundContext.completeHandshake(from)
-        inboundContext.sendControl(from.address, HandshakeRsp(inboundContext.localAddress))
-        pull(in)
+        implicit val ec = materializer.executionContext
+        inboundContext.completeHandshake(from).onComplete { _ ⇒
+          getAsyncCallback[Done] { _ ⇒
+            inboundContext.sendControl(from.address, HandshakeRsp(inboundContext.localAddress))
+            pull(in)
+          }.invoke(Done)
+        }
       }
 
       private def onMessage(env: InboundEnvelope): Unit = {
         if (isKnownOrigin(env))
           push(out, env)
         else {
-          // FIXME remove, only debug
-          log.warning(
-            s"Dropping message [{}] from unknown system with UID [{}]. " +
-              "This system with UID [{}] was probably restarted. " +
-              "Messages will be accepted when new handshake has been completed.",
-            env.message.getClass.getName, inboundContext.localAddress.uid, env.originUid)
           if (log.isDebugEnabled)
             log.debug(
               s"Dropping message [{}] from unknown system with UID [{}]. " +
@@ -222,8 +223,12 @@ private[akka] class InboundHandshake(inboundContext: InboundContext, inControlSt
         }
       }
 
-      private def isKnownOrigin(env: InboundEnvelope): Boolean =
-        env.association.isDefined
+      private def isKnownOrigin(env: InboundEnvelope): Boolean = {
+        // the association is passed in the envelope from the Decoder stage to avoid
+        // additional lookup. The second OR case is because if we didn't use fusing it
+        // would be possible that it was not found by Decoder (handshake not completed yet)
+        env.association.isDefined || inboundContext.association(env.originUid).isDefined
+      }
 
       // OutHandler
       override def onPull(): Unit = pull(in)

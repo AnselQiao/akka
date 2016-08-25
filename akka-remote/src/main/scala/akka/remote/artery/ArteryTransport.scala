@@ -101,7 +101,7 @@ private[akka] trait InboundContext {
    */
   def association(uid: Long): OptionVal[OutboundContext]
 
-  def completeHandshake(peer: UniqueAddress): Unit
+  def completeHandshake(peer: UniqueAddress): Future[Done]
 
 }
 
@@ -736,7 +736,7 @@ private[remote] class ArteryTransport(_system: ExtendedActorSystem, _provider: R
   override def association(uid: Long): OptionVal[Association] =
     associationRegistry.association(uid)
 
-  override def completeHandshake(peer: UniqueAddress): Unit = {
+  override def completeHandshake(peer: UniqueAddress): Future[Done] = {
     val a = associationRegistry.setUID(peer)
     a.completeHandshake(peer)
   }
