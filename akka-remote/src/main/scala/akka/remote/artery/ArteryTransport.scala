@@ -553,20 +553,26 @@ private[remote] class ArteryTransport(_system: ExtendedActorSystem, _provider: R
               case ActorRefCompressionAdvertisement(from, table) ⇒
                 log.debug("Incoming ActorRef compression advertisement from [{}], table: [{}]", from, table)
                 val a = association(from.address)
-                import system.dispatcher
-                a.changeActorRefCompression(table).foreach { _ ⇒
-                  a.sendControl(ActorRefCompressionAdvertisementAck(localAddress, table.version))
-                  system.eventStream.publish(Events.ReceivedActorRefCompressionTable(from, table))
+                // make sure uid is same for active association
+                if (a.associationState.uniqueRemoteAddressValue().exists(_ == from)) {
+                  import system.dispatcher
+                  a.changeActorRefCompression(table).foreach { _ ⇒
+                    a.sendControl(ActorRefCompressionAdvertisementAck(localAddress, table.version))
+                    system.eventStream.publish(Events.ReceivedActorRefCompressionTable(from, table))
+                  }
                 }
               case ActorRefCompressionAdvertisementAck(from, tableVersion) ⇒
                 inboundCompressions.foreach(_.confirmActorRefCompressionAdvertisement(from.uid, tableVersion))
               case ClassManifestCompressionAdvertisement(from, table) ⇒
                 log.debug("Incoming Class Manifest compression advertisement from [{}], table: [{}]", from, table)
                 val a = association(from.address)
-                import system.dispatcher
-                a.changeClassManifestCompression(table).foreach { _ ⇒
-                  a.sendControl(ClassManifestCompressionAdvertisementAck(localAddress, table.version))
-                  system.eventStream.publish(Events.ReceivedClassManifestCompressionTable(from, table))
+                // make sure uid is same for active association
+                if (a.associationState.uniqueRemoteAddressValue().exists(_ == from)) {
+                  import system.dispatcher
+                  a.changeClassManifestCompression(table).foreach { _ ⇒
+                    a.sendControl(ClassManifestCompressionAdvertisementAck(localAddress, table.version))
+                    system.eventStream.publish(Events.ReceivedClassManifestCompressionTable(from, table))
+                  }
                 }
               case ClassManifestCompressionAdvertisementAck(from, tableVersion) ⇒
                 inboundCompressions.foreach(_.confirmActorRefCompressionAdvertisement(from.uid, tableVersion))
