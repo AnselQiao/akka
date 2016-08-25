@@ -29,6 +29,8 @@ import com.typesafe.config.ConfigFactory
 import org.openjdk.jmh.annotations._
 import akka.util.OptionVal
 import akka.actor.Address
+import scala.concurrent.Future
+import akka.Done
 
 @State(Scope.Benchmark)
 @OutputTimeUnit(TimeUnit.MILLISECONDS)
@@ -72,7 +74,7 @@ class CodecBenchmark {
     // the following methods are not used by in this test
     override def sendControl(to: Address, message: ControlMessage): Unit = ???
     override def association(remoteAddress: Address): OutboundContext = ???
-    override def completeHandshake(peer: UniqueAddress): Unit = ???
+    override def completeHandshake(peer: UniqueAddress): Future[Done] = ???
   }
 
   private var materializer: ActorMaterializer = _
